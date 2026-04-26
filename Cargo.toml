@@ -7,3 +7,4 @@ license = "MIT"
 repository = "https://github.com/aagrawal207/echo"
 
 [dependencies]
+crossterm = "0.29.0"
