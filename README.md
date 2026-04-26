@@ -18,10 +18,15 @@ language in public.
 ## Usage
 
 ```
-ech <file>           # plays the file at 300 wpm, paused on word 1
-ech -w 450 notes.md  # 450 wpm; .md syntax is stripped before playback
+ech <file>                 # plays the file at 300 wpm, paused on word 1
+ech -w 450 notes.md        # 450 wpm; .md syntax is stripped before playback
+ech --narrate article.md   # with TTS narration synced to the visual
 cat article.txt | ech
 ```
+
+TTS uses `say` on macOS and `espeak-ng` (or `espeak`) on Linux. If
+neither is on PATH, `--narrate` prints a warning and falls back to
+silent playback.
 
 Controls during playback:
 

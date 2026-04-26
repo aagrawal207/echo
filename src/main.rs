@@ -2,6 +2,7 @@ mod config;
 mod orp;
 mod rsvp;
 mod source;
+mod tts;
 
 use std::process::ExitCode;
 
@@ -11,6 +12,7 @@ fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let mut wpm = cfg.wpm;
     let start_paused = cfg.start_paused;
+    let mut narrate = cfg.narrate;
     let mut path: Option<String> = None;
     let mut i = 0;
     while i < args.len() {
@@ -31,6 +33,14 @@ fn main() -> ExitCode {
                 wpm = parsed;
                 i += 2;
             }
+            "--narrate" => {
+                narrate = true;
+                i += 1;
+            }
+            "--no-narrate" => {
+                narrate = false;
+                i += 1;
+            }
             "-h" | "--help" => {
                 print_help(cfg.wpm);
                 return ExitCode::SUCCESS;
@@ -46,6 +56,21 @@ fn main() -> ExitCode {
         }
     }
 
+    let engine = if narrate {
+        match tts::detect() {
+            Some(e) => Some(e),
+            None => {
+                eprintln!(
+                    "warning: no TTS engine found (looked for `say`, `espeak-ng`, `espeak`). \
+                     Narration disabled."
+                );
+                None
+            }
+        }
+    } else {
+        None
+    };
+
     let text = match source::load(path.as_deref()) {
         Ok(t) => t,
         Err(e) => {
@@ -54,7 +79,7 @@ fn main() -> ExitCode {
         }
     };
 
-    if let Err(e) = rsvp::play(&text, wpm, start_paused) {
+    if let Err(e) = rsvp::play(&text, wpm, start_paused, engine) {
         eprintln!("error: {e}");
         return ExitCode::FAILURE;
     }
@@ -72,8 +97,10 @@ ARGS:
     <FILE>    Path to a .md/.markdown or plain text file. If omitted, reads from stdin.
 
 OPTIONS:
-    -w, --wpm <N>    Playback speed in words per minute [default: {default_wpm}]
-    -h, --help       Show this help
+    -w, --wpm <N>       Playback speed in words per minute [default: {default_wpm}]
+        --narrate       Enable TTS narration (macOS `say`, Linux `espeak(-ng)`)
+        --no-narrate    Disable TTS, overriding the config default
+    -h, --help          Show this help
 
 CONFIG:
     Loaded from $ECHO_CONFIG, else $XDG_CONFIG_HOME/echo/config.toml,
@@ -81,6 +108,7 @@ CONFIG:
 
         wpm            integer, default 300
         start_paused   bool,    default true
+        narrate        bool,    default false
 
     CLI flags override config values."
     );

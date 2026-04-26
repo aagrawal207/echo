@@ -5,12 +5,13 @@ use crossterm::event::{self, Event, KeyCode, KeyEventKind};
 use crossterm::{cursor, execute, queue, style, terminal};
 
 use crate::orp;
+use crate::tts::{Engine, Speaker};
 
 const WPM_STEP: u32 = 25;
 const WPM_MIN: u32 = 60;
 const WPM_MAX: u32 = 2000;
 
-pub fn play(text: &str, wpm: u32, start_paused: bool) -> io::Result<()> {
+pub fn play(text: &str, wpm: u32, start_paused: bool, engine: Option<Engine>) -> io::Result<()> {
     let words: Vec<&str> = text.split_whitespace().collect();
     if words.is_empty() {
         return Ok(());
@@ -20,7 +21,7 @@ pub fn play(text: &str, wpm: u32, start_paused: bool) -> io::Result<()> {
 
     terminal::enable_raw_mode()?;
     execute!(stdout, terminal::EnterAlternateScreen, cursor::Hide)?;
-    let result = run(&mut stdout, &words, wpm, start_paused);
+    let result = run(&mut stdout, &words, wpm, start_paused, engine);
     execute!(stdout, cursor::Show, terminal::LeaveAlternateScreen)?;
     terminal::disable_raw_mode()?;
     result
@@ -31,38 +32,75 @@ fn run<W: Write>(
     words: &[&str],
     start_wpm: u32,
     start_paused: bool,
+    engine: Option<Engine>,
 ) -> io::Result<()> {
     let mut paused = start_paused;
     let mut idx: usize = 0;
     let mut wpm = start_wpm.clamp(WPM_MIN, WPM_MAX);
+    let mut speaker = engine.map(Speaker::new);
 
-    draw(stdout, words, idx, paused, wpm)?;
+    draw(stdout, words, idx, paused, wpm, speaker.is_some())?;
+
+    if !paused {
+        start_narration(speaker.as_mut(), words, idx, wpm);
+    }
 
     while idx < words.len() {
         match wait_for_tick(paused, per_word(wpm))? {
-            Tick::Quit => return Ok(()),
+            Tick::Quit => {
+                if let Some(s) = speaker.as_mut() {
+                    s.stop();
+                }
+                return Ok(());
+            }
             Tick::TogglePause => {
                 paused = !paused;
-                draw(stdout, words, idx, paused, wpm)?;
+                if let Some(s) = speaker.as_mut() {
+                    if paused {
+                        s.pause();
+                    } else if s.is_idle() {
+                        s.start(&words[idx..], wpm)?;
+                    } else {
+                        s.resume();
+                    }
+                }
+                draw(stdout, words, idx, paused, wpm, speaker.is_some())?;
             }
             Tick::Skip(delta) => {
                 idx = clamp_skip(idx, words.len(), delta);
-                draw(stdout, words, idx, paused, wpm)?;
+                if !paused {
+                    start_narration(speaker.as_mut(), words, idx, wpm);
+                } else if let Some(s) = speaker.as_mut() {
+                    s.stop();
+                }
+                draw(stdout, words, idx, paused, wpm, speaker.is_some())?;
             }
             Tick::AdjustWpm(delta) => {
                 wpm = adjust_wpm(wpm, delta);
-                draw(stdout, words, idx, paused, wpm)?;
+                if !paused {
+                    start_narration(speaker.as_mut(), words, idx, wpm);
+                }
+                draw(stdout, words, idx, paused, wpm, speaker.is_some())?;
             }
             Tick::Advance => {
                 idx += 1;
                 if idx < words.len() {
-                    draw(stdout, words, idx, paused, wpm)?;
+                    draw(stdout, words, idx, paused, wpm, speaker.is_some())?;
                 }
             }
-            Tick::Resize => draw(stdout, words, idx, paused, wpm)?,
+            Tick::Resize => draw(stdout, words, idx, paused, wpm, speaker.is_some())?,
         }
     }
+    if let Some(s) = speaker.as_mut() {
+        s.stop();
+    }
     Ok(())
+}
+
+fn start_narration(speaker: Option<&mut Speaker>, words: &[&str], idx: usize, wpm: u32) {
+    if let Some(s) = speaker {
+        let _ = s.start(&words[idx..], wpm);
+    }
 }
 
 fn clamp_skip(idx: usize, len: usize, delta: i32) -> usize {
@@ -134,6 +172,7 @@ fn draw<W: Write>(
     idx: usize,
     paused: bool,
     wpm: u32,
+    narrating: bool,
 ) -> io::Result<()> {
     let (cols, rows) = terminal::size()?;
     let cols = cols as usize;
@@ -144,8 +183,9 @@ fn draw<W: Write>(
     queue!(stdout, terminal::Clear(terminal::ClearType::All))?;
 
     let state = if paused { "PAUSED" } else { "PLAYING" };
+    let voice = if narrating { " · TTS" } else { "" };
     let header = format!(
-        " echo · {wpm} wpm · {state} · word {cur}/{total} ",
+        " echo · {wpm} wpm · {state} · word {cur}/{total}{voice} ",
         cur = idx + 1,
         total = words.len()
     );

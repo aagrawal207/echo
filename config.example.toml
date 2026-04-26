@@ -10,3 +10,8 @@ wpm = 350
 # Whether playback starts paused (you press space to begin).
 # Default: true — gives you a moment to focus on the first word.
 start_paused = true
+
+# Enable TTS narration. Uses macOS `say` or Linux `espeak-ng`/`espeak`
+# if installed — echo prints a warning and falls back to silent
+# playback if no engine is found. Default: false.
+narrate = false

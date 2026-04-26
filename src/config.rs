@@ -7,6 +7,7 @@ use serde::Deserialize;
 pub struct Config {
     pub wpm: u32,
     pub start_paused: bool,
+    pub narrate: bool,
 }
 
 impl Default for Config {
@@ -14,6 +15,7 @@ impl Default for Config {
         Self {
             wpm: 300,
             start_paused: true,
+            narrate: false,
         }
     }
 }
@@ -22,6 +24,7 @@ impl Default for Config {
 struct RawConfig {
     wpm: Option<u32>,
     start_paused: Option<bool>,
+    narrate: Option<bool>,
 }
 
 pub fn load() -> Config {
@@ -51,6 +54,7 @@ fn merge(base: Config, raw: RawConfig) -> Config {
     Config {
         wpm: raw.wpm.unwrap_or(base.wpm),
         start_paused: raw.start_paused.unwrap_or(base.start_paused),
+        narrate: raw.narrate.unwrap_or(base.narrate),
     }
 }
 
