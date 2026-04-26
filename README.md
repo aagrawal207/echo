@@ -32,6 +32,13 @@ Controls during playback:
 | ↑ / ↓     | +25 / -25 wpm             |
 | q / esc   | quit                      |
 
+## Config
+
+Defaults can be set in `~/.config/echo/config.toml` (or
+`$XDG_CONFIG_HOME/echo/config.toml`, or `$ECHO_CONFIG` if you want to
+point at a specific file). See [`config.example.toml`](./config.example.toml)
+for the full list of keys. CLI flags always win over config values.
+
 ## Planned features
 
 - Read plain text and HTML articles from a URL or file

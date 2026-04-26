@@ -1,15 +1,16 @@
+mod config;
 mod orp;
 mod rsvp;
 mod source;
 
 use std::process::ExitCode;
 
-const DEFAULT_WPM: u32 = 300;
-
 fn main() -> ExitCode {
-    let args: Vec<String> = std::env::args().skip(1).collect();
+    let cfg = config::load();
 
-    let mut wpm = DEFAULT_WPM;
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    let mut wpm = cfg.wpm;
+    let start_paused = cfg.start_paused;
     let mut path: Option<String> = None;
     let mut i = 0;
     while i < args.len() {
@@ -31,7 +32,7 @@ fn main() -> ExitCode {
                 i += 2;
             }
             "-h" | "--help" => {
-                print_help();
+                print_help(cfg.wpm);
                 return ExitCode::SUCCESS;
             }
             other if path.is_none() => {
@@ -53,14 +54,14 @@ fn main() -> ExitCode {
         }
     };
 
-    if let Err(e) = rsvp::play(&text, wpm) {
+    if let Err(e) = rsvp::play(&text, wpm, start_paused) {
         eprintln!("error: {e}");
         return ExitCode::FAILURE;
     }
     ExitCode::SUCCESS
 }
 
-fn print_help() {
+fn print_help(default_wpm: u32) {
     println!(
         "ech — terminal RSVP reader (echo project)
 
@@ -71,7 +72,16 @@ ARGS:
     <FILE>    Path to a .md/.markdown or plain text file. If omitted, reads from stdin.
 
 OPTIONS:
-    -w, --wpm <N>    Playback speed in words per minute [default: {DEFAULT_WPM}]
-    -h, --help       Show this help"
+    -w, --wpm <N>    Playback speed in words per minute [default: {default_wpm}]
+    -h, --help       Show this help
+
+CONFIG:
+    Loaded from $ECHO_CONFIG, else $XDG_CONFIG_HOME/echo/config.toml,
+    else ~/.config/echo/config.toml. Keys:
+
+        wpm            integer, default 300
+        start_paused   bool,    default true
+
+    CLI flags override config values."
     );
 }

@@ -1,0 +1,12 @@
+# echo config — copy to ~/.config/echo/config.toml and edit.
+#
+# All keys are optional. Missing keys fall back to defaults below.
+# CLI flags (e.g. --wpm) always override config values.
+
+# Default playback speed in words per minute.
+# Clamped at runtime to [60, 2000]. Default: 300.
+wpm = 350
+
+# Whether playback starts paused (you press space to begin).
+# Default: true — gives you a moment to focus on the first word.
+start_paused = true

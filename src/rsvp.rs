@@ -10,7 +10,7 @@ const WPM_STEP: u32 = 25;
 const WPM_MIN: u32 = 60;
 const WPM_MAX: u32 = 2000;
 
-pub fn play(text: &str, wpm: u32) -> io::Result<()> {
+pub fn play(text: &str, wpm: u32, start_paused: bool) -> io::Result<()> {
     let words: Vec<&str> = text.split_whitespace().collect();
     if words.is_empty() {
         return Ok(());
@@ -20,14 +20,19 @@ pub fn play(text: &str, wpm: u32) -> io::Result<()> {
 
     terminal::enable_raw_mode()?;
     execute!(stdout, terminal::EnterAlternateScreen, cursor::Hide)?;
-    let result = run(&mut stdout, &words, wpm);
+    let result = run(&mut stdout, &words, wpm, start_paused);
     execute!(stdout, cursor::Show, terminal::LeaveAlternateScreen)?;
     terminal::disable_raw_mode()?;
     result
 }
 
-fn run<W: Write>(stdout: &mut W, words: &[&str], start_wpm: u32) -> io::Result<()> {
-    let mut paused = true;
+fn run<W: Write>(
+    stdout: &mut W,
+    words: &[&str],
+    start_wpm: u32,
+    start_paused: bool,
+) -> io::Result<()> {
+    let mut paused = start_paused;
     let mut idx: usize = 0;
     let mut wpm = start_wpm.clamp(WPM_MIN, WPM_MAX);
 
