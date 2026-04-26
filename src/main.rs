@@ -1,7 +1,6 @@
 mod rsvp;
+mod source;
 
-use std::fs;
-use std::io::{self, Read};
 use std::process::ExitCode;
 
 const DEFAULT_WPM: u32 = 300;
@@ -45,7 +44,7 @@ fn main() -> ExitCode {
         }
     }
 
-    let text = match read_source(path.as_deref()) {
+    let text = match source::load(path.as_deref()) {
         Ok(t) => t,
         Err(e) => {
             eprintln!("error: {e}");
@@ -60,17 +59,6 @@ fn main() -> ExitCode {
     ExitCode::SUCCESS
 }
 
-fn read_source(path: Option<&str>) -> io::Result<String> {
-    match path {
-        Some(p) => fs::read_to_string(p),
-        None => {
-            let mut buf = String::new();
-            io::stdin().read_to_string(&mut buf)?;
-            Ok(buf)
-        }
-    }
-}
-
 fn print_help() {
     println!(
         "echo — terminal RSVP reader
@@ -79,7 +67,7 @@ USAGE:
     echo [OPTIONS] [FILE]
 
 ARGS:
-    <FILE>    Path to a text file. If omitted, reads from stdin.
+    <FILE>    Path to a .md/.markdown or plain text file. If omitted, reads from stdin.
 
 OPTIONS:
     -w, --wpm <N>    Playback speed in words per minute [default: {DEFAULT_WPM}]

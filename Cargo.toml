@@ -8,3 +8,4 @@ repository = "https://github.com/aagrawal207/echo"
 
 [dependencies]
 crossterm = "0.29.0"
+pulldown-cmark = { version = "0.13.3", default-features = false }
