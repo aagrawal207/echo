@@ -61,10 +61,10 @@ fn main() -> ExitCode {
 
 fn print_help() {
     println!(
-        "echo — terminal RSVP reader
+        "ech — terminal RSVP reader (echo project)
 
 USAGE:
-    echo [OPTIONS] [FILE]
+    ech [OPTIONS] [FILE]
 
 ARGS:
     <FILE>    Path to a .md/.markdown or plain text file. If omitted, reads from stdin.

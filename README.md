@@ -7,10 +7,30 @@ stop jumping around and reading speed goes up. echo is aiming to do that for
 plain text, web articles, ePubs, and eventually PDFs — with optional TTS
 narration layered on top.
 
+The project is called **echo**; the installed binary is **`ech`** (three
+letters) to avoid colliding with the shell builtin and `/bin/echo`.
+
 ## Status
 
-Early scaffolding. Nothing works yet. Follow along if you like watching
-someone learn a new language in public.
+Early scaffolding. Follow along if you like watching someone learn a new
+language in public.
+
+## Usage
+
+```
+ech <file>           # plays the file at 300 wpm, paused on word 1
+ech -w 450 notes.md  # 450 wpm; .md syntax is stripped before playback
+cat article.txt | ech
+```
+
+Controls during playback:
+
+| Key       | Action                    |
+|-----------|---------------------------|
+| space     | play / pause              |
+| ← / →     | previous / next word      |
+| ↑ / ↓     | +25 / -25 wpm             |
+| q / esc   | quit                      |
 
 ## Planned features
 

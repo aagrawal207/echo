@@ -6,6 +6,10 @@ description = "A terminal RSVP reader written in Rust"
 license = "MIT"
 repository = "https://github.com/aagrawal207/echo"
 
+[[bin]]
+name = "ech"
+path = "src/main.rs"
+
 [dependencies]
 crossterm = "0.29.0"
 pulldown-cmark = { version = "0.13.3", default-features = false }
