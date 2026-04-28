@@ -30,12 +30,20 @@ silent playback.
 
 Controls during playback:
 
-| Key       | Action                    |
-|-----------|---------------------------|
-| space     | play / pause              |
-| ← / →     | previous / next word      |
-| ↑ / ↓     | +25 / -25 wpm             |
-| q / esc   | quit                      |
+| Key           | Action                                |
+|---------------|---------------------------------------|
+| space         | play / pause · restart when finished  |
+| ← / →         | previous / next word                  |
+| b / f         | jump back / forward 10 words          |
+| PgUp / PgDn   | jump back / forward 50 words          |
+| r / Home      | restart from word 1                   |
+| ↑ / ↓         | +25 / -25 wpm                         |
+| ? or h        | toggle on-screen help                 |
+| q / Esc       | quit                                  |
+
+Periods, question marks, and exclamations extend the pause by 3×; commas,
+semicolons, and colons by 2×. Makes sentence breaks feel natural instead
+of a machine-gun stream.
 
 ## Config
 
