@@ -5,6 +5,7 @@ use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
 use crossterm::{cursor, execute, queue, style, terminal};
 
 use crate::orp;
+use crate::picker::{self, Move as PickerMove, Picker};
 use crate::tts::{Engine, Speaker};
 
 const WPM_STEP: u32 = 25;
@@ -42,6 +43,7 @@ struct State {
     wpm: u32,
     show_help: bool,
     finished: bool,
+    picker: Option<Picker>,
 }
 
 fn run<W: Write>(
@@ -58,25 +60,64 @@ fn run<W: Write>(
         wpm: start_wpm.clamp(WPM_MIN, WPM_MAX),
         show_help: false,
         finished: false,
+        picker: None,
     };
     let mut speaker = engine.map(Speaker::new);
 
-    draw(stdout, words, &st, speaker.is_some())?;
+    draw(stdout, words, &mut st, speaker.is_some())?;
     if !st.paused {
         start_narration(speaker.as_mut(), words, st.idx, st.wpm);
     }
 
     loop {
-        let blocking = st.finished || st.paused || st.show_help;
+        let blocking = st.finished || st.paused || st.show_help || st.picker.is_some();
         let tick_budget = if blocking {
             Duration::from_secs(3600)
         } else {
             frame_budget(st.wpm, words[st.idx], pauses)
         };
 
-        match wait_for_tick(tick_budget, blocking)? {
+        let in_picker = st.picker.is_some();
+        let tick = wait_for_tick(tick_budget, blocking, in_picker)?;
+
+        match tick {
             Tick::Quit => break,
-            Tick::Resize => draw(stdout, words, &st, speaker.is_some())?,
+            Tick::Resize => draw(stdout, words, &mut st, speaker.is_some())?,
+            Tick::OpenPicker => {
+                if let Some(s) = speaker.as_mut()
+                    && !st.paused
+                {
+                    s.pause();
+                }
+                st.picker = Some(Picker::new(st.idx));
+                draw(stdout, words, &mut st, speaker.is_some())?;
+            }
+            Tick::CancelPicker => {
+                st.picker = None;
+                if let Some(s) = speaker.as_mut()
+                    && !st.paused
+                {
+                    s.resume();
+                }
+                draw(stdout, words, &mut st, speaker.is_some())?;
+            }
+            Tick::CommitPicker => {
+                if let Some(p) = st.picker.take() {
+                    st.idx = p.cursor;
+                    st.finished = false;
+                    st.paused = true;
+                    if let Some(s) = speaker.as_mut() {
+                        s.stop();
+                    }
+                }
+                draw(stdout, words, &mut st, speaker.is_some())?;
+            }
+            Tick::MovePicker(m) => {
+                if let Some(p) = st.picker.as_mut() {
+                    p.move_cursor(m, words.len());
+                }
+                draw(stdout, words, &mut st, speaker.is_some())?;
+            }
             Tick::ToggleHelp => {
                 st.show_help = !st.show_help;
                 if let Some(s) = speaker.as_mut() {
@@ -86,7 +127,7 @@ fn run<W: Write>(
                         s.resume();
                     }
                 }
-                draw(stdout, words, &st, speaker.is_some())?;
+                draw(stdout, words, &mut st, speaker.is_some())?;
             }
             Tick::TogglePause => {
                 if st.finished {
@@ -108,7 +149,7 @@ fn run<W: Write>(
                         }
                     }
                 }
-                draw(stdout, words, &st, speaker.is_some())?;
+                draw(stdout, words, &mut st, speaker.is_some())?;
             }
             Tick::Skip(delta) => {
                 st.idx = clamp_skip(st.idx, words.len(), delta);
@@ -118,7 +159,7 @@ fn run<W: Write>(
                 } else if let Some(s) = speaker.as_mut() {
                     s.stop();
                 }
-                draw(stdout, words, &st, speaker.is_some())?;
+                draw(stdout, words, &mut st, speaker.is_some())?;
             }
             Tick::JumpStart => {
                 st.idx = 0;
@@ -126,14 +167,14 @@ fn run<W: Write>(
                 if !st.paused {
                     start_narration(speaker.as_mut(), words, st.idx, st.wpm);
                 }
-                draw(stdout, words, &st, speaker.is_some())?;
+                draw(stdout, words, &mut st, speaker.is_some())?;
             }
             Tick::AdjustWpm(delta) => {
                 st.wpm = adjust_wpm(st.wpm, delta);
                 if !st.paused && !st.finished {
                     start_narration(speaker.as_mut(), words, st.idx, st.wpm);
                 }
-                draw(stdout, words, &st, speaker.is_some())?;
+                draw(stdout, words, &mut st, speaker.is_some())?;
             }
             Tick::Advance => {
                 if st.idx + 1 >= words.len() {
@@ -144,7 +185,7 @@ fn run<W: Write>(
                 } else {
                     st.idx += 1;
                 }
-                draw(stdout, words, &st, speaker.is_some())?;
+                draw(stdout, words, &mut st, speaker.is_some())?;
             }
         }
     }
@@ -235,14 +276,18 @@ enum Tick {
     JumpStart,
     AdjustWpm(i32),
     ToggleHelp,
+    OpenPicker,
+    CancelPicker,
+    CommitPicker,
+    MovePicker(PickerMove),
     Quit,
     Resize,
 }
 
-fn wait_for_tick(timeout: Duration, blocking: bool) -> io::Result<Tick> {
+fn wait_for_tick(timeout: Duration, blocking: bool, in_picker: bool) -> io::Result<Tick> {
     if blocking {
         loop {
-            if let Some(tick) = read_event(timeout)? {
+            if let Some(tick) = read_event(timeout, in_picker)? {
                 return Ok(tick);
             }
         }
@@ -253,14 +298,14 @@ fn wait_for_tick(timeout: Duration, blocking: bool) -> io::Result<Tick> {
             if now >= deadline {
                 return Ok(Tick::Advance);
             }
-            if let Some(tick) = read_event(deadline - now)? {
+            if let Some(tick) = read_event(deadline - now, in_picker)? {
                 return Ok(tick);
             }
         }
     }
 }
 
-fn read_event(timeout: Duration) -> io::Result<Option<Tick>> {
+fn read_event(timeout: Duration, in_picker: bool) -> io::Result<Option<Tick>> {
     if !event::poll(timeout)? {
         return Ok(None);
     }
@@ -268,11 +313,30 @@ fn read_event(timeout: Duration) -> io::Result<Option<Tick>> {
         Event::Resize(_, _) => Ok(Some(Tick::Resize)),
         Event::Key(k) if k.kind != KeyEventKind::Release => {
             let ctrl = k.modifiers.contains(KeyModifiers::CONTROL);
+            if in_picker {
+                return Ok(match k.code {
+                    KeyCode::Esc => Some(Tick::CancelPicker),
+                    KeyCode::Enter => Some(Tick::CommitPicker),
+                    KeyCode::Char('c') if ctrl => Some(Tick::Quit),
+                    KeyCode::Left => Some(Tick::MovePicker(PickerMove::Prev)),
+                    KeyCode::Right => Some(Tick::MovePicker(PickerMove::Next)),
+                    KeyCode::Up => Some(Tick::MovePicker(PickerMove::Up)),
+                    KeyCode::Down => Some(Tick::MovePicker(PickerMove::Down)),
+                    KeyCode::Char('b') => Some(Tick::MovePicker(PickerMove::JumpBack(10))),
+                    KeyCode::Char('f') => Some(Tick::MovePicker(PickerMove::JumpForward(10))),
+                    KeyCode::PageUp => Some(Tick::MovePicker(PickerMove::JumpBack(50))),
+                    KeyCode::PageDown => Some(Tick::MovePicker(PickerMove::JumpForward(50))),
+                    KeyCode::Home => Some(Tick::MovePicker(PickerMove::Start)),
+                    KeyCode::End => Some(Tick::MovePicker(PickerMove::End)),
+                    _ => None,
+                });
+            }
             match k.code {
                 KeyCode::Char(' ') => Ok(Some(Tick::TogglePause)),
                 KeyCode::Char('q') | KeyCode::Esc => Ok(Some(Tick::Quit)),
                 KeyCode::Char('c') if ctrl => Ok(Some(Tick::Quit)),
                 KeyCode::Char('?') | KeyCode::Char('h') => Ok(Some(Tick::ToggleHelp)),
+                KeyCode::Char('/') => Ok(Some(Tick::OpenPicker)),
                 KeyCode::Char('r') => Ok(Some(Tick::JumpStart)),
                 KeyCode::Home => Ok(Some(Tick::JumpStart)),
                 KeyCode::Left => Ok(Some(Tick::Skip(-1))),
@@ -290,7 +354,12 @@ fn read_event(timeout: Duration) -> io::Result<Option<Tick>> {
     }
 }
 
-fn draw<W: Write>(stdout: &mut W, words: &[&str], st: &State, narrating: bool) -> io::Result<()> {
+fn draw<W: Write>(
+    stdout: &mut W,
+    words: &[&str],
+    st: &mut State,
+    narrating: bool,
+) -> io::Result<()> {
     let (cols_u16, rows_u16) = terminal::size()?;
 
     queue!(stdout, terminal::Clear(terminal::ClearType::All))?;
@@ -298,6 +367,11 @@ fn draw<W: Write>(stdout: &mut W, words: &[&str], st: &State, narrating: bool) -
     if cols_u16 < MIN_COLS || rows_u16 < MIN_ROWS {
         let msg = format!("terminal too small ({cols_u16}x{rows_u16}) — resize and try again");
         queue!(stdout, cursor::MoveTo(0, 0), style::Print(msg))?;
+        return stdout.flush();
+    }
+
+    if let Some(p) = st.picker.as_mut() {
+        picker::draw(stdout, p, words, cols_u16, rows_u16)?;
         return stdout.flush();
     }
 
@@ -436,7 +510,7 @@ fn draw_progress<W: Write>(
 }
 
 fn draw_footer<W: Write>(stdout: &mut W, cols: usize, rows: usize) -> io::Result<()> {
-    let footer = " space play/pause · ← → step · b f jump · r restart · ↑ ↓ wpm · ? help · q quit ";
+    let footer = " space play/pause · ← → step · / pick · r restart · ↑ ↓ wpm · ? help · q quit ";
     queue!(
         stdout,
         cursor::MoveTo(0, (rows.saturating_sub(1)) as u16),
@@ -456,8 +530,17 @@ fn draw_help_overlay<W: Write>(stdout: &mut W, cols: u16, rows: u16) -> io::Resu
         "PgUp/PgDn    jump back / forward 50 words",
         "r / Home     restart from first word",
         "↑ / ↓        increase / decrease wpm by 25",
+        "/            open word picker",
         "? or h       toggle this help",
         "q / Esc      quit",
+        "",
+        "in picker:",
+        "← → ↑ ↓      move cursor",
+        "b / f        ± 10 words",
+        "PgUp/PgDn    ± 50 words",
+        "Home / End   first / last word",
+        "Enter        jump playback to highlighted word",
+        "Esc          cancel",
     ];
     let width = lines.iter().map(|l| l.chars().count()).max().unwrap_or(0) + 4;
     let height = lines.len() + 2;

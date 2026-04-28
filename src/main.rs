@@ -1,5 +1,6 @@
 mod config;
 mod orp;
+mod picker;
 mod rsvp;
 mod source;
 mod tts;

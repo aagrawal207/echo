@@ -38,8 +38,12 @@ Controls during playback:
 | PgUp / PgDn   | jump back / forward 50 words          |
 | r / Home      | restart from word 1                   |
 | ↑ / ↓         | +25 / -25 wpm                         |
+| /             | open word picker                      |
 | ? or h        | toggle on-screen help                 |
 | q / Esc       | quit                                  |
+
+Inside the picker, arrow keys move the highlight, Enter jumps playback
+to the highlighted word (paused), Esc cancels.
 
 ### Punctuation pauses
 
