@@ -110,7 +110,12 @@ USAGE:
     ech [OPTIONS] [FILE]
 
 ARGS:
-    <FILE>    Path to a .md/.markdown or plain text file. If omitted, reads from stdin.
+    <FILE>    Path or URL to read. Recognized:
+                http(s)://...           Fetch the page and extract the article body
+                *.html / *.htm / *.xhtml Local HTML — same article extraction
+                *.md / *.markdown        Markdown; syntax stripped to prose
+                anything else            Read verbatim as UTF-8 text
+              If omitted, reads from stdin.
 
 OPTIONS:
     -w, --wpm <N>            Playback speed in words per minute [default: {default_wpm}]

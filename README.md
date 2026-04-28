@@ -18,11 +18,17 @@ language in public.
 ## Usage
 
 ```
-ech <file>                 # plays the file at 300 wpm, paused on word 1
-ech -w 450 notes.md        # 450 wpm; .md syntax is stripped before playback
-ech --narrate article.md   # with TTS narration synced to the visual
-cat article.txt | ech
+ech <file>                            # plain text, markdown, or HTML file
+ech https://example.com/article       # fetches the page and extracts the article
+ech -w 450 notes.md                   # 450 wpm; .md syntax stripped before playback
+ech --narrate article.md              # with TTS narration synced to the visual
+cat article.txt | ech                 # stdin works too
 ```
+
+URL and local HTML inputs run through a readability-style extractor that
+picks out the article body and drops nav, sidebars, footers, and scripts.
+If extraction fails, echo falls back to a crude tag stripper and keeps
+playing.
 
 TTS uses `say` on macOS and `espeak-ng` (or `espeak`) on Linux. If
 neither is on PATH, `--narrate` prints a warning and falls back to
