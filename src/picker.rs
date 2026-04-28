@@ -2,6 +2,8 @@ use std::io::{self, Write};
 
 use crossterm::{cursor, queue, style};
 
+use crate::theme::Theme;
+
 pub struct Picker {
     pub cursor: usize,
     // Layout cache — recomputed every draw. The placed Vec maps word index
@@ -82,6 +84,7 @@ pub fn draw<W: Write>(
     words: &[&str],
     cols: u16,
     rows: u16,
+    theme: &Theme,
 ) -> io::Result<()> {
     let margin_x: u16 = 2;
     let header_rows: u16 = 2;
@@ -157,8 +160,8 @@ pub fn draw<W: Write>(
         if i == picker.cursor {
             queue!(
                 stdout,
-                style::SetForegroundColor(style::Color::Black),
-                style::SetBackgroundColor(style::Color::Yellow),
+                style::SetForegroundColor(theme.picker_highlight_fg),
+                style::SetBackgroundColor(theme.picker_highlight_bg),
                 style::Print(&shown),
                 style::SetForegroundColor(style::Color::Reset),
                 style::SetBackgroundColor(style::Color::Reset),

@@ -27,6 +27,11 @@ fn which(cmd: &str) -> bool {
         .is_ok_and(|s| s.success() || s.code().is_some())
 }
 
+// macOS `say -r N` speaks noticeably faster than N visual-WPM because
+// its rate model counts differently than our fixed per-word timer. This
+// factor slows the voice down so it roughly tracks the visual.
+const SAY_RATE_FACTOR: f64 = 0.82;
+
 pub struct Speaker {
     engine: Engine,
     child: Option<Child>,
@@ -46,10 +51,15 @@ impl Speaker {
             return Ok(());
         }
 
+        let rate = match self.engine {
+            Engine::Say => ((wpm as f64) * SAY_RATE_FACTOR) as u32,
+            Engine::Espeak => wpm,
+        };
+
         let mut cmd = match self.engine {
             Engine::Say => {
                 let mut c = Command::new("say");
-                c.arg("-r").arg(wpm.to_string());
+                c.arg("-r").arg(rate.to_string());
                 c
             }
             Engine::Espeak => {
@@ -59,7 +69,7 @@ impl Speaker {
                     "espeak"
                 };
                 let mut c = Command::new(bin);
-                c.arg("-s").arg(wpm.to_string());
+                c.arg("-s").arg(rate.to_string());
                 c
             }
         };
@@ -82,50 +92,10 @@ impl Speaker {
             let _ = child.wait();
         }
     }
-
-    pub fn is_idle(&mut self) -> bool {
-        match self.child.as_mut() {
-            None => true,
-            Some(child) => matches!(child.try_wait(), Ok(Some(_))),
-        }
-    }
-
-    pub fn pause(&mut self) {
-        #[cfg(unix)]
-        if let Some(child) = &self.child {
-            unsafe { libc_kill(child.id() as i32, SIGSTOP) };
-        }
-    }
-
-    pub fn resume(&mut self) {
-        #[cfg(unix)]
-        if let Some(child) = &self.child {
-            unsafe { libc_kill(child.id() as i32, SIGCONT) };
-        }
-    }
 }
 
 impl Drop for Speaker {
     fn drop(&mut self) {
         self.stop();
     }
-}
-
-// Signal numbers differ by OS. Linux uses the "generic" set, macOS/BSD
-// follows the historical BSD numbering. Get them wrong and `kill` hits
-// a random signal.
-#[cfg(target_os = "linux")]
-const SIGSTOP: i32 = 19;
-#[cfg(target_os = "linux")]
-const SIGCONT: i32 = 18;
-
-#[cfg(any(target_os = "macos", target_os = "freebsd", target_os = "openbsd"))]
-const SIGSTOP: i32 = 17;
-#[cfg(any(target_os = "macos", target_os = "freebsd", target_os = "openbsd"))]
-const SIGCONT: i32 = 19;
-
-#[cfg(unix)]
-unsafe extern "C" {
-    #[link_name = "kill"]
-    fn libc_kill(pid: i32, sig: i32) -> i32;
 }

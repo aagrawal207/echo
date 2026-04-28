@@ -3,6 +3,7 @@ mod orp;
 mod picker;
 mod rsvp;
 mod source;
+mod theme;
 mod tts;
 
 use std::process::ExitCode;
@@ -15,6 +16,8 @@ fn main() -> ExitCode {
     let start_paused = cfg.start_paused;
     let mut narrate = cfg.narrate;
     let mut pauses = cfg.pauses;
+    let mut focal = cfg.focal;
+    let mut theme_name = cfg.theme;
     let mut path: Option<String> = None;
     let mut i = 0;
     while i < args.len() {
@@ -33,6 +36,36 @@ fn main() -> ExitCode {
                     return ExitCode::from(2);
                 }
                 wpm = parsed;
+                i += 2;
+            }
+            "-t" | "--theme" => {
+                let Some(raw) = args.get(i + 1) else {
+                    eprintln!(
+                        "error: --theme requires a value (auto, dark, light, solarized, dracula)"
+                    );
+                    return ExitCode::from(2);
+                };
+                match theme::parse_theme(raw) {
+                    Ok(name) => theme_name = name,
+                    Err(e) => {
+                        eprintln!("error: {e}");
+                        return ExitCode::from(2);
+                    }
+                }
+                i += 2;
+            }
+            "-f" | "--focal" => {
+                let Some(raw) = args.get(i + 1) else {
+                    eprintln!("error: --focal requires a value (left, middle, right)");
+                    return ExitCode::from(2);
+                };
+                match config::parse_focal(raw) {
+                    Ok(f) => focal = f,
+                    Err(e) => {
+                        eprintln!("error: {e}");
+                        return ExitCode::from(2);
+                    }
+                }
                 i += 2;
             }
             "-p" | "--pauses" => {
@@ -95,7 +128,9 @@ fn main() -> ExitCode {
         }
     };
 
-    if let Err(e) = rsvp::play(&text, wpm, start_paused, engine, pauses) {
+    let theme = theme_name.resolve();
+
+    if let Err(e) = rsvp::play(&text, wpm, start_paused, engine, pauses, focal, theme) {
         eprintln!("error: {e}");
         return ExitCode::FAILURE;
     }
@@ -119,6 +154,9 @@ ARGS:
 
 OPTIONS:
     -w, --wpm <N>            Playback speed in words per minute [default: {default_wpm}]
+    -f, --focal <POS>        Focal position: left, middle, right [default: middle]
+    -t, --theme <NAME>       Color theme: auto, dark, light, solarized, dracula
+                             [default: auto]
     -p, --pauses <LEVEL>     Punctuation pause level: off, low, medium, high
                              [default: medium]
         --narrate            Enable TTS narration (macOS `say`, Linux `espeak(-ng)`)
@@ -133,6 +171,8 @@ CONFIG:
         start_paused   bool,    default true
         narrate        bool,    default false
         pauses         string,  default \"medium\"  (off|low|medium|high)
+        focal          string,  default \"middle\" (left|middle|right)
+        theme          string,  default \"auto\"   (auto|dark|light|solarized|dracula)
 
     CLI flags override config values."
     );

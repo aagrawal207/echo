@@ -22,3 +22,13 @@ narrate = false
 #   medium  — 3× at . ! ?, 2× at , ; :   (default)
 #   high    — 5× at . ! ?, 3× at , ; :
 pauses = "medium"
+
+# Where the ORP anchor sits on the screen.
+#   left    — 1/4 from the left edge
+#   middle  — center of the screen   (default)
+#   right   — 3/4 from the left edge
+focal = "middle"
+
+# Color theme. "auto" detects dark/light from your terminal. Named
+# themes: dark, light, solarized, dracula. Default: auto.
+theme = "auto"

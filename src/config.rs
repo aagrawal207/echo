@@ -3,7 +3,8 @@ use std::path::PathBuf;
 
 use serde::Deserialize;
 
-use crate::rsvp::PauseLevel;
+use crate::rsvp::{Focal, PauseLevel};
+use crate::theme::{self, ThemeName};
 
 #[derive(Debug, Clone)]
 pub struct Config {
@@ -11,6 +12,8 @@ pub struct Config {
     pub start_paused: bool,
     pub narrate: bool,
     pub pauses: PauseLevel,
+    pub focal: Focal,
+    pub theme: ThemeName,
 }
 
 impl Default for Config {
@@ -20,6 +23,8 @@ impl Default for Config {
             start_paused: true,
             narrate: false,
             pauses: PauseLevel::Medium,
+            focal: Focal::Middle,
+            theme: ThemeName::Auto,
         }
     }
 }
@@ -30,6 +35,8 @@ struct RawConfig {
     start_paused: Option<bool>,
     narrate: Option<bool>,
     pauses: Option<String>,
+    focal: Option<String>,
+    theme: Option<String>,
 }
 
 pub fn load() -> Config {
@@ -60,12 +67,33 @@ fn merge(base: Config, raw: RawConfig) -> Result<Config, String> {
         None => base.pauses,
         Some(s) => parse_pause_level(s)?,
     };
+    let focal = match raw.focal.as_deref() {
+        None => base.focal,
+        Some(s) => parse_focal(s)?,
+    };
+    let theme_name = match raw.theme.as_deref() {
+        None => base.theme,
+        Some(s) => theme::parse_theme(s)?,
+    };
     Ok(Config {
         wpm: raw.wpm.unwrap_or(base.wpm),
         start_paused: raw.start_paused.unwrap_or(base.start_paused),
         narrate: raw.narrate.unwrap_or(base.narrate),
         pauses,
+        focal,
+        theme: theme_name,
     })
+}
+
+pub fn parse_focal(s: &str) -> Result<Focal, String> {
+    match s.to_ascii_lowercase().as_str() {
+        "left" | "l" => Ok(Focal::Left),
+        "middle" | "center" | "m" => Ok(Focal::Middle),
+        "right" | "r" => Ok(Focal::Right),
+        other => Err(format!(
+            "unknown focal value `{other}` (expected left, middle, or right)"
+        )),
+    }
 }
 
 pub fn parse_pause_level(s: &str) -> Result<PauseLevel, String> {
