@@ -15,3 +15,10 @@ start_paused = true
 # if installed — echo prints a warning and falls back to silent
 # playback if no engine is found. Default: false.
 narrate = false
+
+# How much to slow down at punctuation so sentence breaks feel natural.
+#   off     — every word gets the same duration
+#   low     — 2× at . ! ?
+#   medium  — 3× at . ! ?, 2× at , ; :   (default)
+#   high    — 5× at . ! ?, 3× at , ; :
+pauses = "medium"

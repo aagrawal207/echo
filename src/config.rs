@@ -3,11 +3,14 @@ use std::path::PathBuf;
 
 use serde::Deserialize;
 
+use crate::rsvp::PauseLevel;
+
 #[derive(Debug, Clone)]
 pub struct Config {
     pub wpm: u32,
     pub start_paused: bool,
     pub narrate: bool,
+    pub pauses: PauseLevel,
 }
 
 impl Default for Config {
@@ -16,6 +19,7 @@ impl Default for Config {
             wpm: 300,
             start_paused: true,
             narrate: false,
+            pauses: PauseLevel::Medium,
         }
     }
 }
@@ -25,6 +29,7 @@ struct RawConfig {
     wpm: Option<u32>,
     start_paused: Option<bool>,
     narrate: Option<bool>,
+    pauses: Option<String>,
 }
 
 pub fn load() -> Config {
@@ -47,14 +52,31 @@ fn load_result() -> Result<Config, String> {
     let raw = fs::read_to_string(&path).map_err(|e| format!("reading {}: {e}", path.display()))?;
     let parsed: RawConfig =
         toml::from_str(&raw).map_err(|e| format!("parsing {}: {e}", path.display()))?;
-    Ok(merge(Config::default(), parsed))
+    merge(Config::default(), parsed).map_err(|e| format!("in {}: {e}", path.display()))
 }
 
-fn merge(base: Config, raw: RawConfig) -> Config {
-    Config {
+fn merge(base: Config, raw: RawConfig) -> Result<Config, String> {
+    let pauses = match raw.pauses.as_deref() {
+        None => base.pauses,
+        Some(s) => parse_pause_level(s)?,
+    };
+    Ok(Config {
         wpm: raw.wpm.unwrap_or(base.wpm),
         start_paused: raw.start_paused.unwrap_or(base.start_paused),
         narrate: raw.narrate.unwrap_or(base.narrate),
+        pauses,
+    })
+}
+
+pub fn parse_pause_level(s: &str) -> Result<PauseLevel, String> {
+    match s.to_ascii_lowercase().as_str() {
+        "off" | "none" | "0" => Ok(PauseLevel::Off),
+        "low" | "small" => Ok(PauseLevel::Low),
+        "medium" | "med" | "normal" => Ok(PauseLevel::Medium),
+        "high" | "big" | "long" => Ok(PauseLevel::High),
+        other => Err(format!(
+            "unknown pauses value `{other}` (expected off, low, medium, or high)"
+        )),
     }
 }
 
@@ -77,31 +99,48 @@ mod tests {
 
     #[test]
     fn defaults_when_empty() {
-        let cfg = merge(Config::default(), RawConfig::default());
+        let cfg = merge(Config::default(), RawConfig::default()).unwrap();
         assert_eq!(cfg.wpm, 300);
         assert!(cfg.start_paused);
+        assert_eq!(cfg.pauses, PauseLevel::Medium);
     }
 
     #[test]
     fn partial_override() {
         let raw: RawConfig = toml::from_str("wpm = 420").unwrap();
-        let cfg = merge(Config::default(), raw);
+        let cfg = merge(Config::default(), raw).unwrap();
         assert_eq!(cfg.wpm, 420);
         assert!(cfg.start_paused);
+        assert_eq!(cfg.pauses, PauseLevel::Medium);
     }
 
     #[test]
     fn full_override() {
-        let raw: RawConfig = toml::from_str("wpm = 500\nstart_paused = false").unwrap();
-        let cfg = merge(Config::default(), raw);
+        let raw: RawConfig =
+            toml::from_str("wpm = 500\nstart_paused = false\npauses = \"high\"").unwrap();
+        let cfg = merge(Config::default(), raw).unwrap();
         assert_eq!(cfg.wpm, 500);
         assert!(!cfg.start_paused);
+        assert_eq!(cfg.pauses, PauseLevel::High);
+    }
+
+    #[test]
+    fn pauses_parses_case_insensitively() {
+        assert_eq!(parse_pause_level("OFF").unwrap(), PauseLevel::Off);
+        assert_eq!(parse_pause_level("Low").unwrap(), PauseLevel::Low);
+        assert_eq!(parse_pause_level("medium").unwrap(), PauseLevel::Medium);
+        assert_eq!(parse_pause_level("HIGH").unwrap(), PauseLevel::High);
+    }
+
+    #[test]
+    fn bad_pauses_value_rejected() {
+        let raw: RawConfig = toml::from_str("pauses = \"extreme\"").unwrap();
+        let err = merge(Config::default(), raw).unwrap_err();
+        assert!(err.contains("extreme"));
     }
 
     #[test]
     fn unknown_keys_rejected() {
-        // Strict parse: extra keys are silently ignored by default, which we
-        // accept. Asserting the happy-path parse still works with extras.
         let raw: RawConfig = toml::from_str("wpm = 250\nfuture_option = true").unwrap();
         assert_eq!(raw.wpm, Some(250));
     }

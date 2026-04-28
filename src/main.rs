@@ -13,6 +13,7 @@ fn main() -> ExitCode {
     let mut wpm = cfg.wpm;
     let start_paused = cfg.start_paused;
     let mut narrate = cfg.narrate;
+    let mut pauses = cfg.pauses;
     let mut path: Option<String> = None;
     let mut i = 0;
     while i < args.len() {
@@ -31,6 +32,20 @@ fn main() -> ExitCode {
                     return ExitCode::from(2);
                 }
                 wpm = parsed;
+                i += 2;
+            }
+            "-p" | "--pauses" => {
+                let Some(raw) = args.get(i + 1) else {
+                    eprintln!("error: --pauses requires a value (off, low, medium, high)");
+                    return ExitCode::from(2);
+                };
+                match config::parse_pause_level(raw) {
+                    Ok(level) => pauses = level,
+                    Err(e) => {
+                        eprintln!("error: {e}");
+                        return ExitCode::from(2);
+                    }
+                }
                 i += 2;
             }
             "--narrate" => {
@@ -79,7 +94,7 @@ fn main() -> ExitCode {
         }
     };
 
-    if let Err(e) = rsvp::play(&text, wpm, start_paused, engine) {
+    if let Err(e) = rsvp::play(&text, wpm, start_paused, engine, pauses) {
         eprintln!("error: {e}");
         return ExitCode::FAILURE;
     }
@@ -97,10 +112,12 @@ ARGS:
     <FILE>    Path to a .md/.markdown or plain text file. If omitted, reads from stdin.
 
 OPTIONS:
-    -w, --wpm <N>       Playback speed in words per minute [default: {default_wpm}]
-        --narrate       Enable TTS narration (macOS `say`, Linux `espeak(-ng)`)
-        --no-narrate    Disable TTS, overriding the config default
-    -h, --help          Show this help
+    -w, --wpm <N>            Playback speed in words per minute [default: {default_wpm}]
+    -p, --pauses <LEVEL>     Punctuation pause level: off, low, medium, high
+                             [default: medium]
+        --narrate            Enable TTS narration (macOS `say`, Linux `espeak(-ng)`)
+        --no-narrate         Disable TTS, overriding the config default
+    -h, --help               Show this help
 
 CONFIG:
     Loaded from $ECHO_CONFIG, else $XDG_CONFIG_HOME/echo/config.toml,
@@ -109,6 +126,7 @@ CONFIG:
         wpm            integer, default 300
         start_paused   bool,    default true
         narrate        bool,    default false
+        pauses         string,  default \"medium\"  (off|low|medium|high)
 
     CLI flags override config values."
     );

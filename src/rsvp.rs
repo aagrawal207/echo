@@ -14,7 +14,13 @@ const JUMP_WORDS: i32 = 10;
 const MIN_COLS: u16 = 24;
 const MIN_ROWS: u16 = 6;
 
-pub fn play(text: &str, wpm: u32, start_paused: bool, engine: Option<Engine>) -> io::Result<()> {
+pub fn play(
+    text: &str,
+    wpm: u32,
+    start_paused: bool,
+    engine: Option<Engine>,
+    pauses: PauseLevel,
+) -> io::Result<()> {
     let words: Vec<&str> = text.split_whitespace().collect();
     if words.is_empty() {
         return Ok(());
@@ -24,7 +30,7 @@ pub fn play(text: &str, wpm: u32, start_paused: bool, engine: Option<Engine>) ->
 
     terminal::enable_raw_mode()?;
     execute!(stdout, terminal::EnterAlternateScreen, cursor::Hide)?;
-    let result = run(&mut stdout, &words, wpm, start_paused, engine);
+    let result = run(&mut stdout, &words, wpm, start_paused, engine, pauses);
     execute!(stdout, cursor::Show, terminal::LeaveAlternateScreen)?;
     terminal::disable_raw_mode()?;
     result
@@ -44,6 +50,7 @@ fn run<W: Write>(
     start_wpm: u32,
     start_paused: bool,
     engine: Option<Engine>,
+    pauses: PauseLevel,
 ) -> io::Result<()> {
     let mut st = State {
         idx: 0,
@@ -64,7 +71,7 @@ fn run<W: Write>(
         let tick_budget = if blocking {
             Duration::from_secs(3600)
         } else {
-            frame_budget(st.wpm, words[st.idx])
+            frame_budget(st.wpm, words[st.idx], pauses)
         };
 
         match wait_for_tick(tick_budget, blocking)? {
@@ -167,22 +174,58 @@ fn per_word(wpm: u32) -> Duration {
     Duration::from_millis(60_000 / u64::from(wpm))
 }
 
-// Heavier punctuation slows the next frame so the brain gets a beat to
-// close the sentence. Multipliers scale the per-word base.
-fn pause_multiplier(word: &str) -> u32 {
-    let trailing = word.trim_end_matches(|c: char| !c.is_alphanumeric());
-    let tail = &word[trailing.len()..];
-    if tail.contains('.') || tail.contains('!') || tail.contains('?') {
-        3
-    } else if tail.contains(',') || tail.contains(';') || tail.contains(':') {
-        2
-    } else {
-        1
+// Pause levels scale how much a sentence/clause break extends the next
+// frame. `off` means every word gets the plain per-word duration; at
+// the other end `high` gives roughly a one-second pause after a period
+// at 300 wpm.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PauseLevel {
+    Off,
+    Low,
+    Medium,
+    High,
+}
+
+impl PauseLevel {
+    fn multiplier(self, word: &str) -> u32 {
+        let trailing = word.trim_end_matches(|c: char| !c.is_alphanumeric());
+        let tail = &word[trailing.len()..];
+        let has_sentence = tail.contains('.') || tail.contains('!') || tail.contains('?');
+        let has_clause = tail.contains(',') || tail.contains(';') || tail.contains(':');
+
+        match self {
+            PauseLevel::Off => 1,
+            PauseLevel::Low => {
+                if has_sentence {
+                    2
+                } else {
+                    1
+                }
+            }
+            PauseLevel::Medium => {
+                if has_sentence {
+                    3
+                } else if has_clause {
+                    2
+                } else {
+                    1
+                }
+            }
+            PauseLevel::High => {
+                if has_sentence {
+                    5
+                } else if has_clause {
+                    3
+                } else {
+                    1
+                }
+            }
+        }
     }
 }
 
-fn frame_budget(wpm: u32, word: &str) -> Duration {
-    per_word(wpm) * pause_multiplier(word)
+fn frame_budget(wpm: u32, word: &str, pauses: PauseLevel) -> Duration {
+    per_word(wpm) * pauses.multiplier(word)
 }
 
 enum Tick {
@@ -501,15 +544,27 @@ mod tests {
     }
 
     #[test]
-    fn pause_multiplier_table() {
-        assert_eq!(pause_multiplier("plain"), 1);
-        assert_eq!(pause_multiplier("end."), 3);
-        assert_eq!(pause_multiplier("what?"), 3);
-        assert_eq!(pause_multiplier("wait!"), 3);
-        assert_eq!(pause_multiplier("list,"), 2);
-        assert_eq!(pause_multiplier("clause;"), 2);
-        assert_eq!(pause_multiplier("colon:"), 2);
-        // Leading punctuation doesn't count as an end-of-word pause.
-        assert_eq!(pause_multiplier("(aside"), 1);
+    fn pause_levels_scale_correctly() {
+        assert_eq!(PauseLevel::Off.multiplier("end."), 1);
+        assert_eq!(PauseLevel::Off.multiplier("plain"), 1);
+
+        assert_eq!(PauseLevel::Low.multiplier("end."), 2);
+        assert_eq!(PauseLevel::Low.multiplier("list,"), 1);
+        assert_eq!(PauseLevel::Low.multiplier("plain"), 1);
+
+        assert_eq!(PauseLevel::Medium.multiplier("end."), 3);
+        assert_eq!(PauseLevel::Medium.multiplier("what?"), 3);
+        assert_eq!(PauseLevel::Medium.multiplier("wait!"), 3);
+        assert_eq!(PauseLevel::Medium.multiplier("list,"), 2);
+        assert_eq!(PauseLevel::Medium.multiplier("clause;"), 2);
+        assert_eq!(PauseLevel::Medium.multiplier("colon:"), 2);
+        assert_eq!(PauseLevel::Medium.multiplier("plain"), 1);
+
+        assert_eq!(PauseLevel::High.multiplier("end."), 5);
+        assert_eq!(PauseLevel::High.multiplier("list,"), 3);
+        assert_eq!(PauseLevel::High.multiplier("plain"), 1);
+
+        // Leading punctuation is not an end-of-word pause.
+        assert_eq!(PauseLevel::Medium.multiplier("(aside"), 1);
     }
 }

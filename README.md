@@ -41,9 +41,18 @@ Controls during playback:
 | ? or h        | toggle on-screen help                 |
 | q / Esc       | quit                                  |
 
-Periods, question marks, and exclamations extend the pause by 3×; commas,
-semicolons, and colons by 2×. Makes sentence breaks feel natural instead
-of a machine-gun stream.
+### Punctuation pauses
+
+Sentences and clauses get a longer beat so your brain can chunk them.
+Pick a level with `--pauses <off|low|medium|high>` or the `pauses`
+config key. Defaults to `medium`.
+
+| Level  | `.` `!` `?` | `,` `;` `:` |
+|--------|-------------|-------------|
+| off    | 1×          | 1×          |
+| low    | 2×          | 1×          |
+| medium | 3×          | 2×          |
+| high   | 5×          | 3×          |
 
 ## Config
 
