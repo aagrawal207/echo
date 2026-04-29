@@ -134,7 +134,14 @@ mod inner {
         }
 
         pub fn speak(&mut self, words: &[&str], start_idx: usize, wpm: u32) {
-            self.stop();
+            // Stop any in-flight utterance. We don't bump generation here
+            // because we're about to start a new one immediately — a single
+            // generation bump below covers both the cancel and the new start.
+            unsafe {
+                self.synth
+                    .stopSpeakingAtBoundary(AVSpeechBoundary::Immediate);
+            }
+
             let tail = &words[start_idx.min(words.len())..];
             if tail.is_empty() {
                 return;
@@ -153,8 +160,6 @@ mod inner {
             }
             *self.word_offsets.lock().unwrap() = offsets;
 
-            // Bump generation so stale callbacks from the previous
-            // utterance are ignored.
             let ep = self.shared.generation.fetch_add(1, Ordering::Relaxed) + 1;
             self.delegate.ivars().epoch.store(ep, Ordering::Relaxed);
             self.shared.word_index.store(0, Ordering::Relaxed);
