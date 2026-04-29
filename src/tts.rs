@@ -13,6 +13,7 @@ mod inner {
         NSDate, NSDefaultRunLoopMode, NSObject, NSObjectProtocol, NSRange, NSRunLoop, NSString,
     };
 
+    #[derive(Debug)]
     struct SharedState {
         word_index: AtomicUsize,
         finished: AtomicBool,
