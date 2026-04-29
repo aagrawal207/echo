@@ -110,6 +110,16 @@ mod inner {
         }
     }
 
+    // Pump the run loop briefly so any pending AVFoundation callbacks fire.
+    // Used to drain cancel callbacks before starting a fresh utterance.
+    fn pump_once(seconds: f64) {
+        let run_loop = NSRunLoop::currentRunLoop();
+        let timeout = NSDate::dateWithTimeIntervalSinceNow(seconds);
+        unsafe {
+            run_loop.runMode_beforeDate(NSDefaultRunLoopMode, &timeout);
+        }
+    }
+
     impl Speaker {
         pub fn new() -> Self {
             let shared = Arc::new(SharedState {
@@ -134,12 +144,26 @@ mod inner {
         }
 
         pub fn speak(&mut self, words: &[&str], start_idx: usize, wpm: u32) {
-            // Stop any in-flight utterance. We don't bump generation here
-            // because we're about to start a new one immediately — a single
-            // generation bump below covers both the cancel and the new start.
+            // If something is already playing, cancel it and drain the
+            // async cancel before we start a new utterance. Without this,
+            // the late cancel can kill the fresh utterance.
             unsafe {
-                self.synth
-                    .stopSpeakingAtBoundary(AVSpeechBoundary::Immediate);
+                if self.synth.isSpeaking() || self.synth.isPaused() {
+                    // Bump the generation so any late callbacks from the old
+                    // utterance are ignored by the delegate.
+                    self.shared.generation.fetch_add(1, Ordering::Relaxed);
+                    self.synth
+                        .stopSpeakingAtBoundary(AVSpeechBoundary::Immediate);
+                    // Pump until the synth reports idle. Cap at ~50ms to
+                    // avoid hanging the UI in case the callback never
+                    // arrives.
+                    for _ in 0..50 {
+                        if !self.synth.isSpeaking() && !self.synth.isPaused() {
+                            break;
+                        }
+                        pump_once(0.001);
+                    }
+                }
             }
 
             let tail = &words[start_idx.min(words.len())..];
@@ -174,6 +198,27 @@ mod inner {
             }
         }
 
+        // Pause the currently speaking utterance without cancelling it.
+        // The word index holds at its current value. Resume with `resume()`
+        // to continue the same utterance — this avoids the stop/re-speak
+        // race that cancels fresh utterances.
+        pub fn pause(&mut self) {
+            unsafe {
+                if self.synth.isSpeaking() && !self.synth.isPaused() {
+                    self.synth
+                        .pauseSpeakingAtBoundary(AVSpeechBoundary::Immediate);
+                }
+            }
+        }
+
+        pub fn resume(&mut self) {
+            unsafe {
+                if self.synth.isPaused() {
+                    self.synth.continueSpeaking();
+                }
+            }
+        }
+
         pub fn stop(&mut self) {
             self.shared.generation.fetch_add(1, Ordering::Relaxed);
             self.shared.finished.store(false, Ordering::Relaxed);
@@ -199,11 +244,7 @@ mod inner {
     }
 
     pub fn pump() {
-        let run_loop = NSRunLoop::currentRunLoop();
-        let timeout = NSDate::dateWithTimeIntervalSinceNow(0.005);
-        unsafe {
-            run_loop.runMode_beforeDate(NSDefaultRunLoopMode, &timeout);
-        }
+        pump_once(0.005);
     }
 }
 
@@ -219,6 +260,8 @@ mod stub {
             Speaker
         }
         pub fn speak(&mut self, _words: &[&str], _start_idx: usize, _wpm: u32) {}
+        pub fn pause(&mut self) {}
+        pub fn resume(&mut self) {}
         pub fn stop(&mut self) {}
         pub fn current_word_index(&self) -> usize {
             0

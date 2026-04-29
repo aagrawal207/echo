@@ -176,12 +176,12 @@ fn run<W: Write>(
                 if st.show_help
                     && let Some(s) = speaker.as_mut()
                 {
-                    s.stop();
+                    s.pause();
                 } else if !st.show_help
                     && !st.paused
                     && let Some(s) = speaker.as_mut()
                 {
-                    s.speak(words, st.idx, st.wpm);
+                    s.resume();
                 }
                 draw(stdout, words, &mut st, has_tts, &theme)?;
             }
@@ -198,11 +198,11 @@ fn run<W: Write>(
                     if st.paused
                         && let Some(s) = speaker.as_mut()
                     {
-                        s.stop();
+                        s.pause();
                     } else if !st.paused
                         && let Some(s) = speaker.as_mut()
                     {
-                        s.speak(words, st.idx, st.wpm);
+                        s.resume();
                     }
                 }
                 draw(stdout, words, &mut st, has_tts, &theme)?;
