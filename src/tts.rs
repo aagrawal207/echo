@@ -219,6 +219,10 @@ mod inner {
             }
         }
 
+        pub fn is_paused(&self) -> bool {
+            unsafe { self.synth.isPaused() }
+        }
+
         pub fn stop(&mut self) {
             self.shared.generation.fetch_add(1, Ordering::Relaxed);
             self.shared.finished.store(false, Ordering::Relaxed);
@@ -262,6 +266,9 @@ mod stub {
         pub fn speak(&mut self, _words: &[&str], _start_idx: usize, _wpm: u32) {}
         pub fn pause(&mut self) {}
         pub fn resume(&mut self) {}
+        pub fn is_paused(&self) -> bool {
+            false
+        }
         pub fn stop(&mut self) {}
         pub fn current_word_index(&self) -> usize {
             0

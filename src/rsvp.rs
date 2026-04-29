@@ -181,7 +181,11 @@ fn run<W: Write>(
                     && !st.paused
                     && let Some(s) = speaker.as_mut()
                 {
-                    s.resume();
+                    if s.is_paused() {
+                        s.resume();
+                    } else {
+                        s.speak(words, st.idx, st.wpm);
+                    }
                 }
                 draw(stdout, words, &mut st, has_tts, &theme)?;
             }
@@ -202,7 +206,13 @@ fn run<W: Write>(
                     } else if !st.paused
                         && let Some(s) = speaker.as_mut()
                     {
-                        s.resume();
+                        // Resume an in-flight utterance if one is paused;
+                        // otherwise start from the current word.
+                        if s.is_paused() {
+                            s.resume();
+                        } else {
+                            s.speak(words, st.idx, st.wpm);
+                        }
                     }
                 }
                 draw(stdout, words, &mut st, has_tts, &theme)?;
