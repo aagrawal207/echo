@@ -124,18 +124,6 @@ mod inner {
                 synth.setDelegate(Some(ProtocolObject::from_ref(&*delegate)));
             }
 
-            // Warm up AVFoundation's audio pipeline with a silent utterance
-            // so the first real speak() doesn't have ~300ms startup lag.
-            unsafe {
-                let empty = AVSpeechUtterance::initWithString(
-                    AVSpeechUtterance::alloc(),
-                    &NSString::from_str(" "),
-                );
-                empty.setVolume(0.0);
-                synth.speakUtterance(&empty);
-            }
-            shared.generation.fetch_add(1, Ordering::Relaxed);
-
             Self {
                 synth,
                 delegate,
