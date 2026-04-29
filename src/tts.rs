@@ -1,36 +1,29 @@
-// TTS narration via AVFoundation on macOS.
-//
-// Speaks the full text as a single utterance. The delegate receives
-// word-boundary callbacks (`willSpeakRangeOfSpeechString`) that tell us
-// which character offset is about to be spoken. We map that offset back
-// to a word index so the RSVP visual can follow along.
-//
-// The caller must pump the macOS run loop periodically (see `pump()`)
-// for callbacks to fire.
-
 #[cfg(target_os = "macos")]
 mod inner {
-    use std::cell::Cell;
-    use std::sync::{Arc, Mutex};
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
     use objc2::rc::Retained;
     use objc2::runtime::ProtocolObject;
-    use objc2::{AllocAnyThread, DefinedClass, define_class, msg_send};
-    use objc2_avf_audio::{AVSpeechSynthesizer, AVSpeechSynthesizerDelegate, AVSpeechUtterance};
+    use objc2::{define_class, msg_send};
+    use objc2_avf_audio::{
+        AVSpeechBoundary, AVSpeechSynthesizer, AVSpeechSynthesizerDelegate, AVSpeechUtterance,
+    };
     use objc2_foundation::{
         NSDate, NSDefaultRunLoopMode, NSObject, NSObjectProtocol, NSRange, NSRunLoop, NSString,
     };
 
-    #[derive(Debug, Clone)]
-    pub struct TtsState {
-        pub word_index: usize,
-        pub finished: bool,
+    struct SharedState {
+        word_index: AtomicUsize,
+        finished: AtomicBool,
+        generation: AtomicUsize,
     }
 
     #[derive(Debug)]
     struct DelegateIvars {
-        shared: Arc<Mutex<TtsState>>,
-        word_offsets: Arc<Mutex<Vec<usize>>>,
+        shared: Arc<SharedState>,
+        word_offsets: Arc<std::sync::Mutex<Vec<usize>>>,
+        epoch: AtomicUsize,
     }
 
     define_class!(
@@ -50,38 +43,50 @@ mod inner {
                 range: NSRange,
                 _utterance: &AVSpeechUtterance,
             ) {
+                if self.ivars().epoch.load(Ordering::Relaxed)
+                    != self.ivars().shared.generation.load(Ordering::Relaxed)
+                {
+                    return;
+                }
                 let char_offset = range.location;
                 let offsets = self.ivars().word_offsets.lock().unwrap();
                 let word_idx = offsets
                     .iter()
                     .rposition(|&off| off <= char_offset)
                     .unwrap_or(0);
-                let mut state = self.ivars().shared.lock().unwrap();
-                state.word_index = word_idx;
+                self.ivars()
+                    .shared
+                    .word_index
+                    .store(word_idx, Ordering::Relaxed);
             }
 
             #[unsafe(method(speechSynthesizer:didFinishSpeechUtterance:))]
             fn did_finish(&self, _synth: &AVSpeechSynthesizer, _utterance: &AVSpeechUtterance) {
-                let mut state = self.ivars().shared.lock().unwrap();
-                state.finished = true;
+                if self.ivars().epoch.load(Ordering::Relaxed)
+                    == self.ivars().shared.generation.load(Ordering::Relaxed)
+                {
+                    self.ivars().shared.finished.store(true, Ordering::Relaxed);
+                }
             }
 
             #[unsafe(method(speechSynthesizer:didCancelSpeechUtterance:))]
             fn did_cancel(&self, _synth: &AVSpeechSynthesizer, _utterance: &AVSpeechUtterance) {
-                let mut state = self.ivars().shared.lock().unwrap();
-                state.finished = true;
+                // Intentionally empty — cancellation is triggered by stop(),
+                // which bumps the generation. We don't want a stale cancel
+                // callback to mark a fresh utterance as finished.
             }
         }
     );
 
     impl SpeechDelegate {
         fn new(
-            shared: Arc<Mutex<TtsState>>,
-            word_offsets: Arc<Mutex<Vec<usize>>>,
+            shared: Arc<SharedState>,
+            word_offsets: Arc<std::sync::Mutex<Vec<usize>>>,
         ) -> Retained<Self> {
             let alloc = Self::alloc().set_ivars(DelegateIvars {
                 shared,
                 word_offsets,
+                epoch: AtomicUsize::new(0),
             });
             unsafe { msg_send![super(alloc), init] }
         }
@@ -89,16 +94,13 @@ mod inner {
 
     pub struct Speaker {
         synth: Retained<AVSpeechSynthesizer>,
-        _delegate: Retained<SpeechDelegate>,
-        shared: Arc<Mutex<TtsState>>,
-        word_offsets: Arc<Mutex<Vec<usize>>>,
+        delegate: Retained<SpeechDelegate>,
+        shared: Arc<SharedState>,
+        word_offsets: Arc<std::sync::Mutex<Vec<usize>>>,
         base_word: usize,
     }
 
     fn wpm_to_rate(wpm: u32) -> f32 {
-        // AVSpeechUtterance rate is nonlinear. Empirically:
-        //   0.0 ~ 80 wpm,  0.5 ~ 180 wpm,  1.0 ~ 400 wpm
-        // Map linearly in two segments around the 0.5 midpoint.
         let wpm = (wpm as f32).clamp(80.0, 400.0);
         if wpm <= 180.0 {
             (wpm - 80.0) / (180.0 - 80.0) * 0.5
@@ -109,11 +111,12 @@ mod inner {
 
     impl Speaker {
         pub fn new() -> Self {
-            let shared = Arc::new(Mutex::new(TtsState {
-                word_index: 0,
-                finished: false,
-            }));
-            let word_offsets = Arc::new(Mutex::new(Vec::new()));
+            let shared = Arc::new(SharedState {
+                word_index: AtomicUsize::new(0),
+                finished: AtomicBool::new(false),
+                generation: AtomicUsize::new(0),
+            });
+            let word_offsets = Arc::new(std::sync::Mutex::new(Vec::new()));
             let delegate = SpeechDelegate::new(shared.clone(), word_offsets.clone());
             let synth = unsafe { AVSpeechSynthesizer::new() };
             unsafe {
@@ -121,7 +124,7 @@ mod inner {
             }
             Self {
                 synth,
-                _delegate: delegate,
+                delegate,
                 shared,
                 word_offsets,
                 base_word: 0,
@@ -147,11 +150,13 @@ mod inner {
                 }
             }
             *self.word_offsets.lock().unwrap() = offsets;
-            {
-                let mut state = self.shared.lock().unwrap();
-                state.word_index = 0;
-                state.finished = false;
-            }
+
+            // Bump generation so stale callbacks from the previous
+            // utterance are ignored.
+            let ep = self.shared.generation.fetch_add(1, Ordering::Relaxed) + 1;
+            self.delegate.ivars().epoch.store(ep, Ordering::Relaxed);
+            self.shared.word_index.store(0, Ordering::Relaxed);
+            self.shared.finished.store(false, Ordering::Relaxed);
 
             let ns_text = NSString::from_str(&text);
             unsafe {
@@ -163,24 +168,19 @@ mod inner {
         }
 
         pub fn stop(&mut self) {
+            self.shared.generation.fetch_add(1, Ordering::Relaxed);
             unsafe {
                 self.synth
-                    .stopSpeakingAtBoundary(objc2_avf_audio::AVSpeechBoundary::Immediate);
+                    .stopSpeakingAtBoundary(AVSpeechBoundary::Immediate);
             }
-            let mut state = self.shared.lock().unwrap();
-            state.finished = true;
-        }
-
-        pub fn state(&self) -> TtsState {
-            self.shared.lock().unwrap().clone()
         }
 
         pub fn current_word_index(&self) -> usize {
-            self.base_word + self.shared.lock().unwrap().word_index
+            self.base_word + self.shared.word_index.load(Ordering::Relaxed)
         }
 
         pub fn is_finished(&self) -> bool {
-            self.shared.lock().unwrap().finished
+            self.shared.finished.load(Ordering::Relaxed)
         }
     }
 
@@ -200,7 +200,7 @@ mod inner {
 }
 
 #[cfg(target_os = "macos")]
-pub use inner::{Speaker, TtsState, pump};
+pub use inner::{Speaker, pump};
 
 #[cfg(not(target_os = "macos"))]
 mod stub {
