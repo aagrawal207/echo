@@ -85,7 +85,7 @@ fn run<W: Write>(
         finished: false,
         picker: None,
     };
-    let mut speaker = engine.map(Speaker::new);
+    let mut speaker = engine.map(|e| Speaker::with_wpm(e, st.wpm));
 
     draw(stdout, words, &mut st, speaker.is_some(), &theme)?;
     if !st.paused {
@@ -175,8 +175,12 @@ fn run<W: Write>(
             }
             Tick::AdjustWpm(delta) => {
                 st.wpm = adjust_wpm(st.wpm, delta);
-                if !st.paused && !st.finished {
-                    start_narration(speaker.as_mut(), words, st.idx, st.wpm);
+                if let Some(s) = speaker.as_mut() {
+                    if !st.paused && !st.finished {
+                        let _ = s.start(&words[st.idx..], st.wpm);
+                    } else {
+                        s.set_wpm(st.wpm);
+                    }
                 }
                 draw(stdout, words, &mut st, speaker.is_some(), &theme)?;
             }

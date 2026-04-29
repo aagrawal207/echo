@@ -68,6 +68,25 @@ Don't jump ahead. Each step should ship as a working, committed increment.
 - Introducing async runtimes (tokio etc.) — big commitment, discuss before.
 - Anything that changes cross-platform behavior.
 
+## TTS narration
+
+- macOS uses `say`, Linux uses `espeak-ng` (or `espeak`). Detection is
+  in `tts::detect()`.
+- Speaker pre-spawns a warm `say` process with stdin held open. On play,
+  text is written and stdin closed so speech starts instantly (~0ms vs
+  ~200ms cold spawn). After each start a fresh warm process is spawned
+  for next time.
+- Pause = kill the active process. Resume = feed text from the current
+  visual word into the warm process. No SIGSTOP/SIGCONT — macOS audio
+  buffers make signal-based pause unreliable (words repeat, ghost
+  processes).
+- WPM is passed straight to `say -r` / `espeak -s`. The visual timer
+  and TTS run on independent clocks; small drift over long passages is
+  expected. Don't try to add a fixed rate correction factor — it breaks
+  at different speeds.
+- `set_wpm()` replaces the warm process at the new rate so the next
+  resume is instant and at the right speed.
+
 ## Don't
 
 - Don't `git push`. Author pushes manually.
