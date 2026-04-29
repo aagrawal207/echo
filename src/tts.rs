@@ -5,7 +5,7 @@ mod inner {
 
     use objc2::rc::Retained;
     use objc2::runtime::ProtocolObject;
-    use objc2::{define_class, msg_send};
+    use objc2::{AnyThread, DefinedClass, define_class, msg_send};
     use objc2_avf_audio::{
         AVSpeechBoundary, AVSpeechSynthesizer, AVSpeechSynthesizerDelegate, AVSpeechUtterance,
     };
@@ -192,7 +192,7 @@ mod inner {
 
     pub fn pump() {
         let run_loop = NSRunLoop::currentRunLoop();
-        let timeout = unsafe { NSDate::dateWithTimeIntervalSinceNow(0.005) };
+        let timeout = NSDate::dateWithTimeIntervalSinceNow(0.005);
         unsafe {
             run_loop.runMode_beforeDate(NSDefaultRunLoopMode, &timeout);
         }
