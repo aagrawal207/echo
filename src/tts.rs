@@ -96,10 +96,15 @@ mod inner {
     }
 
     fn wpm_to_rate(wpm: u32) -> f32 {
-        // AVSpeechUtterance rate: 0.0 (slowest) to 1.0 (fastest),
-        // default 0.5 (~180 wpm). Rough linear mapping.
-        let clamped = (wpm as f32).clamp(60.0, 600.0);
-        ((clamped - 60.0) / (600.0 - 60.0)).clamp(0.0, 1.0)
+        // AVSpeechUtterance rate is nonlinear. Empirically:
+        //   0.0 ~ 80 wpm,  0.5 ~ 180 wpm,  1.0 ~ 400 wpm
+        // Map linearly in two segments around the 0.5 midpoint.
+        let wpm = (wpm as f32).clamp(80.0, 400.0);
+        if wpm <= 180.0 {
+            (wpm - 80.0) / (180.0 - 80.0) * 0.5
+        } else {
+            0.5 + (wpm - 180.0) / (400.0 - 180.0) * 0.5
+        }
     }
 
     impl Speaker {
@@ -125,19 +130,19 @@ mod inner {
 
         pub fn speak(&mut self, words: &[&str], start_idx: usize, wpm: u32) {
             self.stop();
-            if words.is_empty() {
+            let tail = &words[start_idx.min(words.len())..];
+            if tail.is_empty() {
                 return;
             }
 
             self.base_word = start_idx;
 
-            // Build the text and record each word's char offset.
             let mut text = String::new();
-            let mut offsets = Vec::with_capacity(words.len());
-            for (i, w) in words.iter().enumerate() {
+            let mut offsets = Vec::with_capacity(tail.len());
+            for (i, w) in tail.iter().enumerate() {
                 offsets.push(text.len());
                 text.push_str(w);
-                if i + 1 < words.len() {
+                if i + 1 < tail.len() {
                     text.push(' ');
                 }
             }
