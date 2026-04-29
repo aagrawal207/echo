@@ -1,164 +1,222 @@
-use std::io::{self, Write};
-use std::process::{Child, Command, Stdio};
+// TTS narration via AVFoundation on macOS.
+//
+// Speaks the full text as a single utterance. The delegate receives
+// word-boundary callbacks (`willSpeakRangeOfSpeechString`) that tell us
+// which character offset is about to be spoken. We map that offset back
+// to a word index so the RSVP visual can follow along.
+//
+// The caller must pump the macOS run loop periodically (see `pump()`)
+// for callbacks to fire.
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Engine {
-    Say,
-    Espeak,
-}
+#[cfg(target_os = "macos")]
+mod inner {
+    use std::cell::Cell;
+    use std::sync::{Arc, Mutex};
 
-pub fn detect() -> Option<Engine> {
-    if which("say") {
-        Some(Engine::Say)
-    } else if which("espeak-ng") || which("espeak") {
-        Some(Engine::Espeak)
-    } else {
-        None
-    }
-}
+    use objc2::rc::Retained;
+    use objc2::runtime::ProtocolObject;
+    use objc2::{AllocAnyThread, DefinedClass, define_class, msg_send};
+    use objc2_avf_audio::{AVSpeechSynthesizer, AVSpeechSynthesizerDelegate, AVSpeechUtterance};
+    use objc2_foundation::{
+        NSDate, NSDefaultRunLoopMode, NSObject, NSObjectProtocol, NSRange, NSRunLoop, NSString,
+    };
 
-fn which(cmd: &str) -> bool {
-    Command::new(cmd)
-        .arg("--version")
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .stdin(Stdio::null())
-        .status()
-        .is_ok_and(|s| s.success() || s.code().is_some())
-}
-
-fn espeak_bin() -> &'static str {
-    if which("espeak-ng") {
-        "espeak-ng"
-    } else {
-        "espeak"
-    }
-}
-
-pub struct Speaker {
-    engine: Engine,
-    wpm: u32,
-    // The currently speaking process (stdin already closed).
-    active: Option<Child>,
-    // A pre-spawned process waiting for text on stdin. Closing stdin
-    // triggers it to speak immediately, cutting ~200ms of startup.
-    warm: Option<WarmProcess>,
-}
-
-struct WarmProcess {
-    child: Child,
-    stdin: std::process::ChildStdin,
-}
-
-impl Speaker {
-    pub fn with_wpm(engine: Engine, wpm: u32) -> Self {
-        let mut s = Self {
-            engine,
-            wpm: 0,
-            active: None,
-            warm: None,
-        };
-        s.preheat(wpm);
-        s
+    #[derive(Debug, Clone)]
+    pub struct TtsState {
+        pub word_index: usize,
+        pub finished: bool,
     }
 
-    pub fn start(&mut self, words: &[&str], wpm: u32) -> io::Result<()> {
-        self.stop();
-        if words.is_empty() {
-            return Ok(());
+    #[derive(Debug)]
+    struct DelegateIvars {
+        shared: Arc<Mutex<TtsState>>,
+        word_offsets: Arc<Mutex<Vec<usize>>>,
+    }
+
+    define_class!(
+        #[derive(Debug)]
+        #[unsafe(super(NSObject))]
+        #[name = "EchoSpeechDelegate"]
+        #[ivars = DelegateIvars]
+        struct SpeechDelegate;
+
+        unsafe impl NSObjectProtocol for SpeechDelegate {}
+
+        unsafe impl AVSpeechSynthesizerDelegate for SpeechDelegate {
+            #[unsafe(method(speechSynthesizer:willSpeakRangeOfSpeechString:utterance:))]
+            fn will_speak_range(
+                &self,
+                _synth: &AVSpeechSynthesizer,
+                range: NSRange,
+                _utterance: &AVSpeechUtterance,
+            ) {
+                let char_offset = range.location;
+                let offsets = self.ivars().word_offsets.lock().unwrap();
+                let word_idx = offsets
+                    .iter()
+                    .rposition(|&off| off <= char_offset)
+                    .unwrap_or(0);
+                let mut state = self.ivars().shared.lock().unwrap();
+                state.word_index = word_idx;
+            }
+
+            #[unsafe(method(speechSynthesizer:didFinishSpeechUtterance:))]
+            fn did_finish(&self, _synth: &AVSpeechSynthesizer, _utterance: &AVSpeechUtterance) {
+                let mut state = self.ivars().shared.lock().unwrap();
+                state.finished = true;
+            }
+
+            #[unsafe(method(speechSynthesizer:didCancelSpeechUtterance:))]
+            fn did_cancel(&self, _synth: &AVSpeechSynthesizer, _utterance: &AVSpeechUtterance) {
+                let mut state = self.ivars().shared.lock().unwrap();
+                state.finished = true;
+            }
         }
+    );
 
-        // If the warm process matches the current wpm, use it.
-        // Otherwise spawn a fresh one.
-        let text = words.join(" ");
-        if self.wpm == wpm
-            && let Some(mut wp) = self.warm.take()
-        {
-            let _ = wp.stdin.write_all(text.as_bytes());
-            drop(wp.stdin);
-            self.active = Some(wp.child);
-            self.preheat(wpm);
-            return Ok(());
-        }
-
-        // Cold start — kill the stale warm process, spawn directly.
-        self.kill_warm();
-        let child = spawn_speaking(self.engine, wpm, &text)?;
-        self.active = Some(child);
-        self.wpm = wpm;
-        self.preheat(wpm);
-        Ok(())
-    }
-
-    pub fn stop(&mut self) {
-        if let Some(mut child) = self.active.take() {
-            let _ = child.kill();
-            let _ = child.wait();
+    impl SpeechDelegate {
+        fn new(
+            shared: Arc<Mutex<TtsState>>,
+            word_offsets: Arc<Mutex<Vec<usize>>>,
+        ) -> Retained<Self> {
+            let alloc = Self::alloc().set_ivars(DelegateIvars {
+                shared,
+                word_offsets,
+            });
+            unsafe { msg_send![super(alloc), init] }
         }
     }
 
-    pub fn set_wpm(&mut self, wpm: u32) {
-        if self.wpm != wpm {
-            self.preheat(wpm);
+    pub struct Speaker {
+        synth: Retained<AVSpeechSynthesizer>,
+        _delegate: Retained<SpeechDelegate>,
+        shared: Arc<Mutex<TtsState>>,
+        word_offsets: Arc<Mutex<Vec<usize>>>,
+        base_word: usize,
+    }
+
+    fn wpm_to_rate(wpm: u32) -> f32 {
+        // AVSpeechUtterance rate: 0.0 (slowest) to 1.0 (fastest),
+        // default 0.5 (~180 wpm). Rough linear mapping.
+        let clamped = (wpm as f32).clamp(60.0, 600.0);
+        ((clamped - 60.0) / (600.0 - 60.0)).clamp(0.0, 1.0)
+    }
+
+    impl Speaker {
+        pub fn new() -> Self {
+            let shared = Arc::new(Mutex::new(TtsState {
+                word_index: 0,
+                finished: false,
+            }));
+            let word_offsets = Arc::new(Mutex::new(Vec::new()));
+            let delegate = SpeechDelegate::new(shared.clone(), word_offsets.clone());
+            let synth = unsafe { AVSpeechSynthesizer::new() };
+            unsafe {
+                synth.setDelegate(Some(ProtocolObject::from_ref(&*delegate)));
+            }
+            Self {
+                synth,
+                _delegate: delegate,
+                shared,
+                word_offsets,
+                base_word: 0,
+            }
+        }
+
+        pub fn speak(&mut self, words: &[&str], start_idx: usize, wpm: u32) {
+            self.stop();
+            if words.is_empty() {
+                return;
+            }
+
+            self.base_word = start_idx;
+
+            // Build the text and record each word's char offset.
+            let mut text = String::new();
+            let mut offsets = Vec::with_capacity(words.len());
+            for (i, w) in words.iter().enumerate() {
+                offsets.push(text.len());
+                text.push_str(w);
+                if i + 1 < words.len() {
+                    text.push(' ');
+                }
+            }
+            *self.word_offsets.lock().unwrap() = offsets;
+            {
+                let mut state = self.shared.lock().unwrap();
+                state.word_index = 0;
+                state.finished = false;
+            }
+
+            let ns_text = NSString::from_str(&text);
+            unsafe {
+                let utterance =
+                    AVSpeechUtterance::initWithString(AVSpeechUtterance::alloc(), &ns_text);
+                utterance.setRate(wpm_to_rate(wpm));
+                self.synth.speakUtterance(&utterance);
+            }
+        }
+
+        pub fn stop(&mut self) {
+            unsafe {
+                self.synth
+                    .stopSpeakingAtBoundary(objc2_avf_audio::AVSpeechBoundary::Immediate);
+            }
+            let mut state = self.shared.lock().unwrap();
+            state.finished = true;
+        }
+
+        pub fn state(&self) -> TtsState {
+            self.shared.lock().unwrap().clone()
+        }
+
+        pub fn current_word_index(&self) -> usize {
+            self.base_word + self.shared.lock().unwrap().word_index
+        }
+
+        pub fn is_finished(&self) -> bool {
+            self.shared.lock().unwrap().finished
         }
     }
 
-    fn preheat(&mut self, wpm: u32) {
-        self.kill_warm();
-        self.wpm = wpm;
-        if let Ok((child, stdin)) = spawn_warm(self.engine, wpm) {
-            self.warm = Some(WarmProcess { child, stdin });
+    impl Drop for Speaker {
+        fn drop(&mut self) {
+            self.stop();
         }
     }
 
-    fn kill_warm(&mut self) {
-        if let Some(wp) = self.warm.take() {
-            drop(wp.stdin);
-            let mut child = wp.child;
-            let _ = child.kill();
-            let _ = child.wait();
+    pub fn pump() {
+        let run_loop = NSRunLoop::currentRunLoop();
+        let timeout = unsafe { NSDate::dateWithTimeIntervalSinceNow(0.005) };
+        unsafe {
+            run_loop.runMode_beforeDate(NSDefaultRunLoopMode, &timeout);
         }
     }
 }
 
-impl Drop for Speaker {
-    fn drop(&mut self) {
-        self.stop();
-        self.kill_warm();
-    }
-}
+#[cfg(target_os = "macos")]
+pub use inner::{Speaker, TtsState, pump};
 
-fn build_cmd(engine: Engine, wpm: u32) -> Command {
-    match engine {
-        Engine::Say => {
-            let mut c = Command::new("say");
-            c.arg("-r").arg(wpm.to_string());
-            c
+#[cfg(not(target_os = "macos"))]
+mod stub {
+    pub struct Speaker;
+
+    impl Speaker {
+        pub fn new() -> Self {
+            Speaker
         }
-        Engine::Espeak => {
-            let mut c = Command::new(espeak_bin());
-            c.arg("-s").arg(wpm.to_string());
-            c
+        pub fn speak(&mut self, _words: &[&str], _start_idx: usize, _wpm: u32) {}
+        pub fn stop(&mut self) {}
+        pub fn current_word_index(&self) -> usize {
+            0
+        }
+        pub fn is_finished(&self) -> bool {
+            true
         }
     }
+
+    pub fn pump() {}
 }
 
-fn spawn_warm(engine: Engine, wpm: u32) -> io::Result<(Child, std::process::ChildStdin)> {
-    let mut cmd = build_cmd(engine, wpm);
-    cmd.stdin(Stdio::piped())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null());
-    let mut child = cmd.spawn()?;
-    let stdin = child
-        .stdin
-        .take()
-        .ok_or_else(|| io::Error::other("failed to capture stdin"))?;
-    Ok((child, stdin))
-}
-
-fn spawn_speaking(engine: Engine, wpm: u32, text: &str) -> io::Result<Child> {
-    let (child, mut stdin) = spawn_warm(engine, wpm)?;
-    let _ = stdin.write_all(text.as_bytes());
-    drop(stdin);
-    Ok(child)
-}
+#[cfg(not(target_os = "macos"))]
+pub use stub::{Speaker, pump};

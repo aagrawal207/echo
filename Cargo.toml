@@ -10,6 +10,11 @@ repository = "https://github.com/aagrawal207/echo"
 name = "ech"
 path = "src/main.rs"
 
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6"
+objc2-foundation = { version = "0.3", features = ["NSRunLoop", "NSDate", "NSObjCRuntime", "NSString", "NSRange"] }
+objc2-avf-audio = { version = "0.3", features = ["AVSpeechSynthesis"] }
+
 [dependencies]
 crossterm = "0.29.0"
 pulldown-cmark = { version = "0.13.3", default-features = false }

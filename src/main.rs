@@ -105,21 +105,6 @@ fn main() -> ExitCode {
         }
     }
 
-    let engine = if narrate {
-        match tts::detect() {
-            Some(e) => Some(e),
-            None => {
-                eprintln!(
-                    "warning: no TTS engine found (looked for `say`, `espeak-ng`, `espeak`). \
-                     Narration disabled."
-                );
-                None
-            }
-        }
-    } else {
-        None
-    };
-
     let text = match source::load(path.as_deref()) {
         Ok(t) => t,
         Err(e) => {
@@ -130,7 +115,7 @@ fn main() -> ExitCode {
 
     let theme = theme_name.resolve();
 
-    if let Err(e) = rsvp::play(&text, wpm, start_paused, engine, pauses, focal, theme) {
+    if let Err(e) = rsvp::play(&text, wpm, start_paused, narrate, pauses, focal, theme) {
         eprintln!("error: {e}");
         return ExitCode::FAILURE;
     }

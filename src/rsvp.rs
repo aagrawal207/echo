@@ -7,7 +7,7 @@ use crossterm::{cursor, execute, queue, style, terminal};
 use crate::orp;
 use crate::picker::{self, Move as PickerMove, Picker};
 use crate::theme::Theme;
-use crate::tts::{Engine, Speaker};
+use crate::tts;
 
 const WPM_STEP: u32 = 25;
 const WPM_MIN: u32 = 60;
@@ -20,7 +20,7 @@ pub fn play(
     text: &str,
     wpm: u32,
     start_paused: bool,
-    engine: Option<Engine>,
+    narrate: bool,
     pauses: PauseLevel,
     focal: Focal,
     theme: Theme,
@@ -39,7 +39,7 @@ pub fn play(
         &words,
         wpm,
         start_paused,
-        engine,
+        narrate,
         pauses,
         focal,
         theme,
@@ -71,7 +71,7 @@ fn run<W: Write>(
     words: &[&str],
     start_wpm: u32,
     start_paused: bool,
-    engine: Option<Engine>,
+    narrate: bool,
     pauses: PauseLevel,
     focal: Focal,
     theme: Theme,
@@ -85,38 +85,77 @@ fn run<W: Write>(
         finished: false,
         picker: None,
     };
-    let mut speaker = engine.map(|e| Speaker::with_wpm(e, st.wpm));
+    let mut speaker: Option<tts::Speaker> = if narrate {
+        Some(tts::Speaker::new())
+    } else {
+        None
+    };
 
     draw(stdout, words, &mut st, speaker.is_some(), &theme)?;
-    if !st.paused {
-        start_narration(speaker.as_mut(), words, st.idx, st.wpm);
+    if !st.paused
+        && let Some(s) = speaker.as_mut()
+    {
+        s.speak(words, st.idx, st.wpm);
     }
 
     loop {
+        // Pump macOS run loop so TTS callbacks fire.
+        if speaker.is_some() {
+            tts::pump();
+        }
+
+        // If TTS is driving, sync the visual to the audio word index.
+        let narrating_active =
+            speaker.is_some() && !st.paused && !st.finished && st.picker.is_none();
+        if narrating_active && let Some(s) = speaker.as_ref() {
+            let tts_idx = s.current_word_index();
+            if tts_idx < words.len() && tts_idx != st.idx {
+                st.idx = tts_idx;
+                draw(stdout, words, &mut st, true, &theme)?;
+            }
+            if s.is_finished() {
+                st.finished = true;
+                draw(stdout, words, &mut st, true, &theme)?;
+            }
+        }
+
         let blocking = st.finished || st.paused || st.show_help || st.picker.is_some();
-        let tick_budget = if blocking {
-            Duration::from_secs(3600)
+        // When narrating, use a short poll so we check TTS state frequently.
+        // When not narrating, use the WPM-based frame budget.
+        let tick_budget = if narrating_active {
+            Duration::from_millis(10)
+        } else if blocking {
+            if speaker.is_some() {
+                Duration::from_millis(50)
+            } else {
+                Duration::from_secs(3600)
+            }
         } else {
             frame_budget(st.wpm, words[st.idx], pauses)
         };
 
         let in_picker = st.picker.is_some();
-        let tick = wait_for_tick(tick_budget, blocking, in_picker)?;
+        let tick = wait_for_tick(tick_budget, blocking && !narrating_active, in_picker)?;
 
+        let has_tts = speaker.is_some();
         match tick {
             Tick::Quit => break,
-            Tick::Resize => draw(stdout, words, &mut st, speaker.is_some(), &theme)?,
+            Tick::Resize => draw(stdout, words, &mut st, has_tts, &theme)?,
             Tick::OpenPicker => {
-                stop_narration(speaker.as_mut());
+                if let Some(s) = speaker.as_mut() {
+                    s.stop();
+                }
                 st.picker = Some(Picker::new(st.idx));
-                draw(stdout, words, &mut st, speaker.is_some(), &theme)?;
+                draw(stdout, words, &mut st, has_tts, &theme)?;
             }
             Tick::CancelPicker => {
                 st.picker = None;
-                if !st.paused {
-                    start_narration(speaker.as_mut(), words, st.idx, st.wpm);
+                if !st.paused
+                    && let Some(s) = speaker.as_mut()
+                {
+                    s.speak(words, st.idx, st.wpm);
                 }
-                draw(stdout, words, &mut st, speaker.is_some(), &theme)?;
+                draw(stdout, words, &mut st, has_tts, &theme)?;
             }
             Tick::CommitPicker => {
                 if let Some(p) = st.picker.take() {
@@ -124,74 +163,89 @@ fn run<W: Write>(
                     st.finished = false;
                     st.paused = true;
                 }
-                draw(stdout, words, &mut st, speaker.is_some(), &theme)?;
+                draw(stdout, words, &mut st, has_tts, &theme)?;
             }
             Tick::MovePicker(m) => {
                 if let Some(p) = st.picker.as_mut() {
                     p.move_cursor(m, words.len());
                 }
-                draw(stdout, words, &mut st, speaker.is_some(), &theme)?;
+                draw(stdout, words, &mut st, has_tts, &theme)?;
             }
             Tick::ToggleHelp => {
                 st.show_help = !st.show_help;
-                if st.show_help {
-                    stop_narration(speaker.as_mut());
-                } else if !st.paused {
-                    start_narration(speaker.as_mut(), words, st.idx, st.wpm);
+                if st.show_help
+                    && let Some(s) = speaker.as_mut()
+                {
+                    s.stop();
+                } else if !st.show_help
+                    && !st.paused
+                    && let Some(s) = speaker.as_mut()
+                {
+                    s.speak(words, st.idx, st.wpm);
                 }
-                draw(stdout, words, &mut st, speaker.is_some(), &theme)?;
+                draw(stdout, words, &mut st, has_tts, &theme)?;
             }
             Tick::TogglePause => {
                 if st.finished {
                     st.idx = 0;
                     st.finished = false;
                     st.paused = false;
-                    start_narration(speaker.as_mut(), words, st.idx, st.wpm);
+                    if let Some(s) = speaker.as_mut() {
+                        s.speak(words, st.idx, st.wpm);
+                    }
                 } else {
                     st.paused = !st.paused;
-                    if st.paused {
-                        stop_narration(speaker.as_mut());
-                    } else {
-                        start_narration(speaker.as_mut(), words, st.idx, st.wpm);
+                    if st.paused
+                        && let Some(s) = speaker.as_mut()
+                    {
+                        s.stop();
+                    } else if !st.paused
+                        && let Some(s) = speaker.as_mut()
+                    {
+                        s.speak(words, st.idx, st.wpm);
                     }
                 }
-                draw(stdout, words, &mut st, speaker.is_some(), &theme)?;
+                draw(stdout, words, &mut st, has_tts, &theme)?;
             }
             Tick::Skip(delta) => {
                 st.idx = clamp_skip(st.idx, words.len(), delta);
                 st.finished = false;
-                if !st.paused {
-                    start_narration(speaker.as_mut(), words, st.idx, st.wpm);
+                if !st.paused
+                    && let Some(s) = speaker.as_mut()
+                {
+                    s.speak(words, st.idx, st.wpm);
                 }
-                draw(stdout, words, &mut st, speaker.is_some(), &theme)?;
+                draw(stdout, words, &mut st, has_tts, &theme)?;
             }
             Tick::JumpStart => {
                 st.idx = 0;
                 st.finished = false;
-                if !st.paused {
-                    start_narration(speaker.as_mut(), words, st.idx, st.wpm);
+                if !st.paused
+                    && let Some(s) = speaker.as_mut()
+                {
+                    s.speak(words, st.idx, st.wpm);
                 }
-                draw(stdout, words, &mut st, speaker.is_some(), &theme)?;
+                draw(stdout, words, &mut st, has_tts, &theme)?;
             }
             Tick::AdjustWpm(delta) => {
                 st.wpm = adjust_wpm(st.wpm, delta);
-                if let Some(s) = speaker.as_mut() {
-                    if !st.paused && !st.finished {
-                        let _ = s.start(&words[st.idx..], st.wpm);
-                    } else {
-                        s.set_wpm(st.wpm);
-                    }
+                if !st.paused
+                    && !st.finished
+                    && let Some(s) = speaker.as_mut()
+                {
+                    s.speak(words, st.idx, st.wpm);
                 }
-                draw(stdout, words, &mut st, speaker.is_some(), &theme)?;
+                draw(stdout, words, &mut st, has_tts, &theme)?;
             }
             Tick::Advance => {
-                if st.idx + 1 >= words.len() {
-                    st.finished = true;
-                    stop_narration(speaker.as_mut());
-                } else {
-                    st.idx += 1;
+                if speaker.is_none() {
+                    if st.idx + 1 >= words.len() {
+                        st.finished = true;
+                    } else {
+                        st.idx += 1;
+                    }
+                    draw(stdout, words, &mut st, false, &theme)?;
                 }
-                draw(stdout, words, &mut st, speaker.is_some(), &theme)?;
             }
         }
     }
@@ -199,18 +253,6 @@ fn run<W: Write>(
         s.stop();
     }
     Ok(())
-}
-
-fn start_narration(speaker: Option<&mut Speaker>, words: &[&str], idx: usize, wpm: u32) {
-    if let Some(s) = speaker {
-        let _ = s.start(&words[idx..], wpm);
-    }
-}
-
-fn stop_narration(speaker: Option<&mut Speaker>) {
-    if let Some(s) = speaker {
-        s.stop();
-    }
 }
 
 fn clamp_skip(idx: usize, len: usize, delta: i32) -> usize {
